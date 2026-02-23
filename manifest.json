@@ -1,0 +1,9 @@
+{
+  "name": "KofoNote",
+  "short_name": "KofoNote",
+  "description": "Přepis meetingů do textu",
+  "start_url": "/kofonote/",
+  "display": "standalone",
+  "background_color": "#f9fafb",
+  "theme_color": "#3b82f6"
+}
