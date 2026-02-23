@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from 'react';
+import { useState, useCallback } from 'react';
 import ApiKeyInput from './components/ApiKeyInput';
 import FileUpload from './components/FileUpload';
 import ProgressBar from './components/ProgressBar';
@@ -7,7 +7,6 @@ import SummaryView from './components/SummaryView';
 import ExportButtons from './components/ExportButtons';
 import { summarizeTranscript } from './lib/summarize';
 
-// States: idle | loading | transcribing | done | summarizing
 export default function App() {
   const [appState, setAppState] = useState('idle');
   const [apiKey, setApiKey] = useState('');
@@ -16,67 +15,47 @@ export default function App() {
   const [transcript, setTranscript] = useState('');
   const [summary, setSummary] = useState('');
   const [error, setError] = useState('');
-  const workerRef = useRef(null);
 
   const handleFile = useCallback(async (file) => {
+    if (!apiKey) {
+      setError('Zadej Groq API klíč před nahráním souboru.');
+      return;
+    }
     setError('');
     setTranscript('');
     setSummary('');
     setProgress(null);
-    setAppState('loading');
-    setStatusText('Načítám audio soubor...');
+    setAppState('transcribing');
+    setStatusText('Nahrávám audio na Groq...');
 
     try {
-      // Read audio file and decode to Float32Array at 16kHz
-      const arrayBuffer = await file.arrayBuffer();
-      const audioCtx = new AudioContext({ sampleRate: 16000 });
-      const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
-      audioCtx.close();
+      const formData = new FormData();
+      formData.append('file', file, file.name);
+      formData.append('model', 'whisper-large-v3-turbo');
+      formData.append('language', 'cs');
+      formData.append('response_format', 'text');
 
-      const channelData = audioBuffer.getChannelData(0);
-      const float32 = new Float32Array(channelData);
+      const response = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${apiKey}` },
+        body: formData,
+      });
 
-      // Spin up worker
-      if (workerRef.current) workerRef.current.terminate();
-      const worker = new Worker(
-        new URL('./workers/transcribe.worker.js', import.meta.url),
-        { type: 'module' }
-      );
-      workerRef.current = worker;
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err?.error?.message || 'Chyba Groq Whisper API – zkontroluj API klíč');
+      }
 
-      worker.onmessage = (e) => {
-        const { type, data, text, message } = e.data;
-        if (type === 'status') {
-          setStatusText(message || text);
-          setAppState('transcribing');
-        } else if (type === 'progress') {
-          if (data?.progress != null) setProgress(data.progress / 100);
-        } else if (type === 'result') {
-          setTranscript(text.trim());
-          setAppState('done');
-          setProgress(null);
-          worker.terminate();
-        } else if (type === 'error') {
-          setError(message);
-          setAppState('idle');
-          worker.terminate();
-        }
-      };
-
-      worker.onerror = (e) => {
-        setError(`Chyba workeru: ${e.message}`);
-        setAppState('idle');
-      };
-
-      setAppState('transcribing');
-      setStatusText('Stahuji model Whisper...');
-      worker.postMessage({ audioData: float32 });
+      const text = await response.text();
+      setTranscript(text.trim());
+      setAppState('done');
+      setProgress(null);
 
     } catch (err) {
-      setError(`Chyba při načítání souboru: ${err.message}`);
+      setError(`Chyba při přepisu: ${err.message}`);
       setAppState('idle');
     }
-  }, []);
+  }, [apiKey]);
 
   const handleSummarize = async () => {
     if (!apiKey || !transcript) return;
@@ -93,7 +72,6 @@ export default function App() {
   };
 
   const handleReset = () => {
-    if (workerRef.current) workerRef.current.terminate();
     setAppState('idle');
     setTranscript('');
     setSummary('');
@@ -101,50 +79,42 @@ export default function App() {
     setProgress(null);
   };
 
-  const isLoading = appState === 'loading' || appState === 'transcribing';
+  const isLoading = appState === 'transcribing';
 
   return (
     <div className="min-h-screen bg-gray-50">
       <div className="max-w-3xl mx-auto px-4 py-8">
-        {/* Header */}
         <div className="text-center mb-8">
           <h1 className="text-3xl font-bold text-gray-900 mb-1">🎵 KofoNote</h1>
           <p className="text-gray-500">Přepis meetingů do češtiny</p>
         </div>
 
-        {/* Error */}
         {error && (
           <div className="bg-red-50 border border-red-200 text-red-700 rounded-xl px-4 py-3 mb-6 text-sm">
             ⚠️ {error}
           </div>
         )}
 
-        {/* IDLE */}
         {appState === 'idle' && (
           <>
             <ApiKeyInput onKeyChange={setApiKey} />
             <FileUpload onFile={handleFile} />
             <div className="mt-4 bg-blue-50 border border-blue-100 rounded-xl px-4 py-3 text-sm text-blue-700">
-              💡 Při prvním použití se stáhne model (~150 MB). Příště okamžitě z cache.
+              💡 Přepis probíhá přes Groq Whisper API – rychlý a přesný i pro češtinu.
             </div>
           </>
         )}
 
-        {/* LOADING / TRANSCRIBING */}
         {isLoading && (
           <ProgressBar progress={progress} status={statusText} />
         )}
 
-        {/* DONE / SUMMARIZING */}
         {(appState === 'done' || appState === 'summarizing') && (
           <div className="space-y-6">
-            {/* Summary */}
             {summary && <SummaryView markdown={summary} />}
 
-            {/* Transcript */}
             <TranscriptView text={transcript} onChange={setTranscript} />
 
-            {/* Summarize button */}
             {!summary && (
               <div className="relative group inline-block">
                 <button
@@ -153,9 +123,7 @@ export default function App() {
                   className="bg-blue-500 hover:bg-blue-600 text-white px-6 py-2.5 rounded-lg font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2"
                 >
                   {appState === 'summarizing' ? (
-                    <>
-                      <span className="animate-spin">⚙️</span> Generuji shrnutí...
-                    </>
+                    <><span className="animate-spin">⚙️</span> Generuji shrnutí...</>
                   ) : (
                     '✨ Vytvořit AI shrnutí'
                   )}
@@ -168,10 +136,8 @@ export default function App() {
               </div>
             )}
 
-            {/* Export buttons */}
             <ExportButtons transcript={transcript} summary={summary} />
 
-            {/* Reset */}
             <button
               onClick={handleReset}
               className="text-sm text-gray-400 hover:text-gray-600 underline transition-colors"
